@@ -52,6 +52,19 @@ body {
     font-weight: 700; letter-spacing: 1px;
     padding: 6px 10px;
 }
+/* Buttons in header */
+.func-buttons { margin-left: auto; display: flex; gap: 8px; padding-right: 8px; }
+.btn { background: #0f1419; color: var(--accent1); border: 1px solid var(--grid); padding: 4px 8px; cursor: pointer; font-family: inherit; font-size: 12px; }
+.btn:hover { background: #151b21; }
+.btn:active { transform: translateY(1px); }
+.btn-close { color: var(--accent1); border-color: var(--grid); background: #0f1419; }
+
+/* Overlay panel (QT) bloom theme */
+.overlay-panel { position: fixed; background: var(--panel); border: 1px solid var(--grid); outline: 1px solid var(--accent1); box-shadow: 0 8px 24px rgba(0,0,0,0.6); display: flex; flex-direction: column; box-sizing: border-box; resize: both; overflow: auto; min-width: 280px; min-height: 200px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); z-index: 2000; }
+.overlay-panel.hidden { display: none; }
+.overlay-header { display: flex; align-items: center; justify-content: space-between; background: var(--panel-2); color: var(--accent1); border-bottom: 1px solid var(--grid); padding: 6px 8px; position: sticky; top: 0; z-index: 2; cursor: move; }
+.overlay-title { font-weight: 900; letter-spacing: 0.6px; text-transform: uppercase; }
+.overlay-body { overflow: auto; padding: 8px; }
 .header-bar::before {
     content: " OPENALEX // RESEARCH DIGGER ";
     color: var(--accent1);

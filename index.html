@@ -32,6 +32,10 @@
         <!-- Header Bar -->
         <div class="header-bar">
             ╔══ RESEARCH DIGGER ══╗ OpenAlex Terminal Interface
+            <span class="func-buttons" id="func-buttons">
+                <button class="btn" id="btn-trends" title="Open Trends (QT)">TRENDS</button>
+                <button class="btn" id="btn-network" title="Open Network (QN)">NETWORK</button>
+            </span>
         </div>
         
         <div class="container">
@@ -75,6 +79,27 @@
             </div>
         </div>
         </div>
+        <!-- Overlay: Trends (QT) -->
+        <div id="qt-panel" class="overlay-panel qt hidden" aria-hidden="true" role="dialog" aria-label="Trends">
+            <div class="overlay-header">
+                <span class="overlay-title">[ TRENDS ]</span>
+                <button class="btn btn-close" id="qt-close" aria-label="Close">×</button>
+            </div>
+            <div class="overlay-body" id="qt-content">
+                <div class="author-detail">No trends loaded yet. Use this space to visualize publication statistics, citation velocity, and topic shifts.</div>
+            </div>
+        </div>
+
+        <!-- Overlay: Network (QN) -->
+        <div id="qn-panel" class="overlay-panel qn hidden" aria-hidden="true" role="dialog" aria-label="Network">
+            <div class="overlay-header">
+                <span class="overlay-title">[ NETWORK | Coauthor Countries by Year ]</span>
+                <button class="btn btn-close" id="qn-close" aria-label="Close">×</button>
+            </div>
+            <div class="overlay-body" id="qn-content">
+                <div class="author-detail">No network loaded yet. Open with a selected author.</div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -86,6 +111,7 @@
         let inWorksMode = false;
         let debugMode = true;
         let typingInstant = true; // render outputs instantly by default
+        let trendsCache = null; // { years: [{year,pubs,cites,coavg}], maxPubs, maxCites, maxCoavg }
 
         // ========== UTILITY FUNCTIONS ==========
         function debugLog(message, data = null) {
@@ -263,6 +289,314 @@
         document.querySelectorAll('.quadrant').forEach(quadrant => {
             quadrant.addEventListener('scroll', function() {
                 this.scrollLeft = 0;
+            });
+        });
+
+        // ========== OVERLAY: TRENDS (QT) ==========
+        async function fetchAllWorksForAuthor_Trends(authorId) {
+            const results = [];
+            let cursor = '*';
+            const perPage = 200;
+            let pages = 0;
+            const maxPages = 20;
+            while (cursor && pages < maxPages) {
+                const url = `https://api.openalex.org/works?filter=author.id:${authorId}&per-page=${perPage}&cursor=${encodeURIComponent(cursor)}`;
+                const res = await fetch(url);
+                if (!res.ok) break;
+                const data = await res.json();
+                if (Array.isArray(data.results)) results.push(...data.results);
+                cursor = data?.meta?.next_cursor || null;
+                pages++;
+            }
+            return results;
+        }
+
+        function buildYearAgg(works) {
+            const map = new Map();
+            for (const w of works) {
+                const y = w.publication_year;
+                if (!y || typeof y !== 'number') continue;
+                let row = map.get(y);
+                if (!row) { row = { pubs: 0, cites: 0, coSum: 0, n: 0 }; map.set(y, row); }
+                row.pubs += 1;
+                row.cites += (w.cited_by_count || 0);
+                const auths = Array.isArray(w.authorships) ? w.authorships.length : 0;
+                row.coSum += Math.max(0, auths - 1);
+                row.n += 1;
+            }
+            const years = Array.from(map.keys()).sort((a,b)=>a-b).map(y => {
+                const r = map.get(y);
+                return { year: y, pubs: r.pubs, cites: r.cites, coavg: r.n ? r.coSum / r.n : 0 };
+            });
+            const maxPubs = years.reduce((m,r)=>Math.max(m, r.pubs), 0) || 1;
+            const maxCites = years.reduce((m,r)=>Math.max(m, r.cites), 0) || 1;
+            const maxCoavg = years.reduce((m,r)=>Math.max(m, r.coavg), 0) || 1;
+            return { years, maxPubs, maxCites, maxCoavg };
+        }
+
+        function makeBar(value, max, width=24, char='█', padChar='·') {
+            const filled = Math.max(0, Math.min(width, Math.round((value / Math.max(1,max)) * width)));
+            return char.repeat(filled) + padChar.repeat(width - filled);
+        }
+
+        function renderTrends(range='10y') {
+            const container = document.getElementById('qt-content');
+            if (!container) return;
+            if (!trendsCache || !trendsCache.years || trendsCache.years.length === 0) {
+                container.innerHTML = '<div class="author-detail">No data yet. Select an author and open Trends.</div>';
+                return;
+            }
+            const rows = trendsCache.years.slice();
+            let useRows = rows;
+            if (range === '5y') useRows = rows.slice(-5);
+            else if (range === '10y') useRows = rows.slice(-10);
+
+            let out = '';
+            out += 'Year  | Publications                     | Citations                         | Coauthors (avg)\n';
+            out += '------|----------------------------------|----------------------------------|----------------\n';
+            for (const r of useRows) {
+                const pubsBar = makeBar(r.pubs, trendsCache.maxPubs, 30);
+                const citesBar = makeBar(r.cites, trendsCache.maxCites, 30);
+                const coBar = makeBar(r.coavg, trendsCache.maxCoavg, 14);
+                const yr = String(r.year).padEnd(5, ' ');
+                const pubsLbl = String(r.pubs).padStart(3,' ');
+                const citesLbl = String(r.cites).padStart(5,' ');
+                const coLbl = r.coavg.toFixed(2).padStart(5,' ');
+                out += `${yr}| ${pubsBar} ${pubsLbl} | ${citesBar} ${citesLbl} | ${coBar} ${coLbl}\n`;
+            }
+            const controls = `\n<div style="margin-bottom:8px;">Range: <button class="btn" data-range="5y">5y</button> <button class="btn" data-range="10y">10y</button> <button class="btn" data-range="all">All</button></div>`;
+            container.innerHTML = controls + `<pre>${out}</pre>`;
+            container.querySelectorAll('button[data-range]').forEach(b=>{
+                b.addEventListener('click', ()=>{ renderTrends(b.getAttribute('data-range')); });
+            });
+        }
+
+        // ========== OVERLAY: NETWORK (QN) ==========
+        let networkCache = null; // { years: [{year, total, top:[{cc,count}...]}], maxCount }
+
+        function buildYearCountryAgg(works, authorId) {
+            const yearToCcCount = new Map();
+            for (const w of works) {
+                const y = w.publication_year;
+                if (!y || typeof y !== 'number') continue;
+                const auths = Array.isArray(w.authorships) ? w.authorships : [];
+                // identify anchor
+                const anchor = auths.find(a => a.author && String(a.author.id||'').endsWith('/'+authorId));
+                if (!anchor) continue;
+                const coSet = new Set();
+                for (const a of auths) {
+                    const aId = a.author && a.author.id ? String(a.author.id) : '';
+                    if (aId.endsWith('/'+authorId)) continue;
+                    const insts = Array.isArray(a.institutions) ? a.institutions : [];
+                    for (const inst of insts) {
+                        const cc = (inst && inst.country_code ? String(inst.country_code).toUpperCase() : '');
+                        if (cc) coSet.add(cc);
+                    }
+                }
+                if (!yearToCcCount.has(y)) yearToCcCount.set(y, new Map());
+                const ccMap = yearToCcCount.get(y);
+                for (const cc of coSet) ccMap.set(cc, (ccMap.get(cc)||0)+1);
+            }
+            const years = Array.from(yearToCcCount.keys()).sort((a,b)=>a-b).map(y => {
+                const ccMap = yearToCcCount.get(y);
+                const entries = Array.from(ccMap.entries()).sort((a,b)=>b[1]-a[1]);
+                const total = entries.length;
+                return { year: y, total, top: entries.slice(0,5).map(([cc,count])=>({cc,count})) };
+            });
+            const maxCount = years.reduce((m,row)=> Math.max(m, row.top.length? row.top[0].count : 0), 1);
+            return { years, maxCount };
+        }
+
+        function renderNetwork(range='10y') {
+            const container = document.getElementById('qn-content');
+            if (!container) return;
+            if (!networkCache || !networkCache.years || networkCache.years.length === 0) {
+                container.innerHTML = '<div class="author-detail">No network data.</div>';
+                return;
+            }
+            const rows = networkCache.years.slice();
+            let useRows = rows;
+            if (range === '5y') useRows = rows.slice(-5);
+            else if (range === '10y') useRows = rows.slice(-10);
+
+            let out = '';
+            out += 'Year  | Unique | Top Countries (count, bars)\n';
+            out += '------|--------|----------------------------------------------\n';
+            for (const r of useRows) {
+                const yr = String(r.year).padEnd(5,' ');
+                const uniq = String(r.total).padStart(6,' ');
+                const parts = [];
+                for (const t of r.top) {
+                    const bar = makeBar(t.count, networkCache.maxCount, 10);
+                    parts.push(`${t.cc}(${t.count}) ${bar}`);
+                }
+                out += `${yr}| ${uniq} | ${parts.join('  ')}\n`;
+            }
+            const controls = `\n<div style="margin-bottom:8px;">Range: <button class=\"btn\" data-nrange=\"5y\">5y</button> <button class=\"btn\" data-nrange=\"10y\">10y</button> <button class=\"btn\" data-nrange=\"all\">All</button></div>`;
+            container.innerHTML = controls + `<pre>${out}</pre>`;
+            container.querySelectorAll('button[data-nrange]').forEach(b=>{
+                b.addEventListener('click', ()=>{ renderNetwork(b.getAttribute('data-nrange')); });
+            });
+        }
+
+        function openNetwork() {
+            const panel = document.getElementById('qn-panel');
+            if (!panel) return;
+            const q = inferQuadrantRect();
+            panel.style.left = q.left + 'px';
+            panel.style.top = q.top + 'px';
+            panel.style.width = q.width + 'px';
+            panel.style.height = q.height + 'px';
+            panel.classList.remove('hidden');
+            panel.setAttribute('aria-hidden', 'false');
+
+            if (!selectedAuthor || !selectedAuthor.id) {
+                const c = document.getElementById('qn-content');
+                if (c) c.innerHTML = '<div class="author-detail">Select an author first to view the coauthor network.</div>';
+                return;
+            }
+            const authorId = String(selectedAuthor.id).split('/').pop();
+            (async ()=>{
+                try {
+                    const works = await fetchAllWorksForAuthor_Trends(authorId);
+                    networkCache = buildYearCountryAgg(works, authorId);
+                    renderNetwork('10y');
+                } catch (e) {
+                    const c = document.getElementById('qn-content');
+                    if (c) c.innerHTML = '<div class="author-detail">Failed to load network.</div>';
+                }
+            })();
+        }
+
+        function closeNetwork() {
+            const panel = document.getElementById('qn-panel');
+            if (!panel) return;
+            panel.classList.add('hidden');
+            panel.setAttribute('aria-hidden', 'true');
+        }
+
+        function inferQuadrantRect() {
+            const grid = document.querySelector('.container');
+            if (!grid) return { left: 8, top: 80, width: 400, height: 300 };
+            const rect = grid.getBoundingClientRect();
+            const qWidth = (rect.width - 6) / 2; // approximate gap
+            const qHeight = (rect.height - 6) / 2;
+            const header = document.querySelector('.header-bar');
+            const topBase = header ? header.getBoundingClientRect().bottom : (rect.top + 8);
+            return { left: rect.left + 8, top: topBase + 8, width: Math.floor(qWidth), height: Math.floor(qHeight) };
+        }
+
+        function openTrends() {
+            const panel = document.getElementById('qt-panel');
+            if (!panel) return;
+            const q = inferQuadrantRect();
+            panel.style.left = q.left + 'px';
+            panel.style.top = q.top + 'px';
+            panel.style.width = q.width + 'px';
+            panel.style.height = q.height + 'px';
+            panel.classList.remove('hidden');
+            panel.setAttribute('aria-hidden', 'false');
+
+            // Prepare data if we have a selected author
+            if (!selectedAuthor || !selectedAuthor.id) {
+                const c = document.getElementById('qt-content');
+                if (c) c.innerHTML = '<div class="author-detail">Select an author first to view trends.</div>';
+                return;
+            }
+            const authorId = String(selectedAuthor.id).split('/').pop();
+            (async ()=>{
+                try {
+                    const works = await fetchAllWorksForAuthor_Trends(authorId);
+                    trendsCache = buildYearAgg(works);
+                    renderTrends('10y');
+                } catch (e) {
+                    const c = document.getElementById('qt-content');
+                    if (c) c.innerHTML = `<div class="author-detail">Failed to load trends.</div>`;
+                }
+            })();
+        }
+
+        function closeTrends() {
+            const panel = document.getElementById('qt-panel');
+            if (!panel) return;
+            panel.classList.add('hidden');
+            panel.setAttribute('aria-hidden', 'true');
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            const btn = document.getElementById('btn-trends');
+            const closeBtn = document.getElementById('qt-close');
+            if (btn) btn.addEventListener('click', openTrends);
+            if (closeBtn) closeBtn.addEventListener('click', closeTrends);
+
+            const nbtn = document.getElementById('btn-network');
+            const nclose = document.getElementById('qn-close');
+            if (nbtn) nbtn.addEventListener('click', openNetwork);
+            if (nclose) nclose.addEventListener('click', closeNetwork);
+            // Dragging support
+            (function enableDrag() {
+                const panel = document.getElementById('qt-panel');
+                const header = panel ? panel.querySelector('.overlay-header') : null;
+                if (!panel || !header) return;
+                let dragging = false, startX = 0, startY = 0, startLeft = 0, startTop = 0;
+                header.addEventListener('mousedown', function(e) {
+                    dragging = true;
+                    startX = e.clientX; startY = e.clientY;
+                    const rect = panel.getBoundingClientRect();
+                    startLeft = rect.left; startTop = rect.top;
+                    document.body.style.userSelect = 'none';
+                });
+                window.addEventListener('mousemove', function(e) {
+                    if (!dragging) return;
+                    const dx = e.clientX - startX; const dy = e.clientY - startY;
+                    panel.style.left = Math.max(8, startLeft + dx) + 'px';
+                    panel.style.top = Math.max(8, startTop + dy) + 'px';
+                });
+                window.addEventListener('mouseup', function() {
+                    if (!dragging) return; dragging = false; document.body.style.userSelect = '';
+                });
+            })();
+            (function enableDragN() {
+                const panel = document.getElementById('qn-panel');
+                const header = panel ? panel.querySelector('.overlay-header') : null;
+                if (!panel || !header) return;
+                let dragging = false, startX = 0, startY = 0, startLeft = 0, startTop = 0;
+                header.addEventListener('mousedown', function(e) {
+                    dragging = true;
+                    startX = e.clientX; startY = e.clientY;
+                    const rect = panel.getBoundingClientRect();
+                    startLeft = rect.left; startTop = rect.top;
+                    document.body.style.userSelect = 'none';
+                });
+                window.addEventListener('mousemove', function(e) {
+                    if (!dragging) return;
+                    const dx = e.clientX - startX; const dy = e.clientY - startY;
+                    panel.style.left = Math.max(8, startLeft + dx) + 'px';
+                    panel.style.top = Math.max(8, startTop + dy) + 'px';
+                });
+                window.addEventListener('mouseup', function() {
+                    if (!dragging) return; dragging = false; document.body.style.userSelect = '';
+                });
+            })();
+            document.addEventListener('keydown', function(e) {
+                if (e.key === 'Escape') { closeTrends(); closeNetwork(); }
+            });
+            window.addEventListener('resize', function() {
+                const panel = document.getElementById('qt-panel');
+                if (panel && !panel.classList.contains('hidden')) {
+                    // Keep within viewport
+                    const rect = panel.getBoundingClientRect();
+                    const maxW = window.innerWidth - 16, maxH = window.innerHeight - 16;
+                    if (rect.right > maxW) panel.style.left = Math.max(8, maxW - rect.width) + 'px';
+                    if (rect.bottom > maxH) panel.style.top = Math.max(8, maxH - rect.height) + 'px';
+                }
+                const npanel = document.getElementById('qn-panel');
+                if (npanel && !npanel.classList.contains('hidden')) {
+                    const rect = npanel.getBoundingClientRect();
+                    const maxW = window.innerWidth - 16, maxH = window.innerHeight - 16;
+                    if (rect.right > maxW) npanel.style.left = Math.max(8, maxW - rect.width) + 'px';
+                    if (rect.bottom > maxH) npanel.style.top = Math.max(8, maxH - rect.height) + 'px';
+                }
             });
         });
 

@@ -44,6 +44,12 @@ body {
     text-shadow: 0 0 10px #FFD700;
 }
 
+.func-buttons { margin-left: auto; display: flex; gap: 8px; padding-right: 8px; }
+.btn { background: #111; color: #FFD700; border: 1px solid #2E4F4F; padding: 4px 8px; cursor: pointer; font-family: inherit; font-size: 12px; }
+.btn:hover { background: #151515; }
+.btn:active { transform: translateY(1px); }
+.btn-close { color: #FFD700; border-color: #2E4F4F; background: #111; }
+
 .border-top, .border-bottom {
     position: absolute;
     left: 20px;
@@ -198,6 +204,13 @@ body {
 
 /* Ensure instant scroll behavior (no smooth animation) */
 .quadrant, .command-history, #author-profile-content, .works-container, .details-container { scroll-behavior: auto; }
+
+/* Overlay panel (QT) base theme */
+.overlay-panel { position: fixed; background: #000; border: 1px solid #2E4F4F; outline: 1px solid #FFD700; box-shadow: 0 8px 24px rgba(0,0,0,0.5); display: flex; flex-direction: column; box-sizing: border-box; resize: both; overflow: auto; min-width: 280px; min-height: 200px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); z-index: 2000; }
+.overlay-panel.hidden { display: none; }
+.overlay-header { display: flex; align-items: center; justify-content: space-between; background: #111; color: #FFD700; border-bottom: 1px solid #2E4F4F; padding: 6px 8px; position: sticky; top: 0; z-index: 2; cursor: move; }
+.overlay-title { font-weight: bold; letter-spacing: 1px; }
+.overlay-body { overflow: auto; padding: 8px; }
 
 /* Blink effect for quadrant activity */
 @keyframes blink-hit {
