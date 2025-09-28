@@ -1,0 +1,974 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenAlex 4-Quadrant Interface Mockup</title>
+    <link rel="stylesheet" href="index.css">
+    <script>
+        (function() {
+            try {
+                var params = new URLSearchParams(window.location.search);
+                var theme = params.get('theme');
+                if (theme && theme.toLowerCase() === 'bloom') {
+                    var link = document.querySelector('link[rel="stylesheet"]');
+                    if (link) link.href = 'index.bloom.css';
+                }
+            } catch (e) {}
+        })();
+    </script>
+</head>
+<body>
+    <div class="ascii-border">
+        <div class="border-top">+==========================================================================================================================================================+
+|                                                                                                                                                          |
++==========================================================================================================================================================+</div>
+        <div class="border-bottom">+==========================================================================================================================================================+
+|                                                                                                                                                          |
++==========================================================================================================================================================+</div>
+        <div class="border-sides border-left">|||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||</div>
+        <div class="border-sides border-right">|||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||</div>
+        
+        <!-- Header Bar -->
+        <div class="header-bar">
+            ╔══ RESEARCH DIGGER ══╗ OpenAlex Terminal Interface
+        </div>
+        
+        <div class="container">
+        <!-- Q1: Command Terminal -->
+        <div class="quadrant q1">
+            <div class="quadrant-header">[ COMMAND TERMINAL ]</div>
+            <div class="status" id="status-display">Ready</div>
+            <div class="command-history" id="command-history"></div>
+            <div class="input-line">
+                <span class="prompt" id="prompt-text">search$</span>
+                <input type="text" id="search-input" placeholder="Enter command...">
+            </div>
+            <div class="help-text" id="help-text">
+                Available commands:<br>
+                • Enter author name to search<br>
+                • Type 'clear' to reset interface
+            </div>
+        </div>
+
+        <!-- Q2: Author Info -->
+        <div class="quadrant q2">
+            <div class="quadrant-header">[ AUTHOR PROFILE ]</div>
+            <div id="author-profile-content">
+                <div class="author-detail">No author selected</div>
+            </div>
+        </div>
+
+        <!-- Q3: Works List -->
+        <div class="quadrant q3">
+            <div class="quadrant-header">[ WORKS LIST ]</div>
+            <div class="works-container" id="works-list">
+                <div class="author-detail">No works loaded</div>
+            </div>
+        </div>
+
+        <!-- Q4: Details View -->
+        <div class="quadrant q4">
+            <div class="quadrant-header">[ WORK DETAILS ]</div>
+            <div class="details-container" id="work-details">
+                <div class="author-detail">Select a work to view details</div>
+            </div>
+        </div>
+        </div>
+    </div>
+
+    <script>
+        // ========== STATE VARIABLES ==========
+        let isSearching = false;
+        let currentResults = null;
+        let awaitingSelection = false;
+        let selectedAuthor = null;
+        let inWorksMode = false;
+        let debugMode = true;
+        let typingInstant = true; // render outputs instantly by default
+
+        // ========== UTILITY FUNCTIONS ==========
+        function debugLog(message, data = null) {
+            if (debugMode) {
+                console.log(`[DEBUG] ${message}`, data || '');
+                addOutput(`<span style="color: #666;">[DEBUG] ${message}</span>`, 'debug');
+            }
+        }
+
+        function safeExecute(fn, context = 'unknown') {
+            try {
+                return fn();
+            } catch (error) {
+                console.error(`[ERROR in ${context}]:`, error);
+                addOutput(`<span class="error">[ERROR in ${context}]: ${error.message}</span>`);
+                addOutput(`<span style="color: #666;">[STACK]: ${error.stack}</span>`);
+                return null;
+            }
+        }
+
+        // Ensure Q1 quadrant stays scrolled to the bottom after new output
+        function scrollQ1ToBottom() {
+            try {
+                const q1 = document.querySelector('.q1');
+                if (q1) { q1.scrollTop = q1.scrollHeight; }
+                const history = document.getElementById('command-history');
+                if (history) { history.scrollTop = history.scrollHeight; }
+            } catch (_) {}
+        }
+
+        // Create anchor for URL values (supports DOI strings)
+        function toClickableUrl(url, displayText) {
+            if (!url) return '';
+            let href = String(url);
+            if (/^doi:/i.test(href)) {
+                href = 'https://doi.org/' + href.replace(/^doi:\s*/i, '');
+            } else if (!/^https?:\/\//i.test(href)) {
+                // Treat bare DOI or other tokens as DOI
+                href = 'https://doi.org/' + href;
+            }
+            const text = displayText || url;
+            return `<a href="${href}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+        }
+
+        // ========== DISPLAY FUNCTIONS ==========
+        function addOutput(content, className = '', targetQuadrant = 'q1') {
+            let target;
+            switch(targetQuadrant) {
+                case 'q1':
+                    target = document.getElementById('command-history');
+                    break;
+                case 'q2':
+                    target = document.getElementById('author-profile-content');
+                    break;
+                case 'q3':
+                    target = document.getElementById('works-list');
+                    break;
+                case 'q4':
+                    target = document.getElementById('work-details');
+                    break;
+                default:
+                    target = document.getElementById('command-history');
+            }
+            
+            if (target) {
+                const div = document.createElement('div');
+                div.className = `output ${className}`;
+                div.innerHTML = content;
+                target.appendChild(div);
+                div.scrollIntoView({ behavior: 'auto', block: 'end' });
+
+                // Blink the owning quadrant
+                const quadrantEl = target.closest('.quadrant');
+                if (quadrantEl) {
+                    quadrantEl.classList.remove('blink-hit');
+                    void quadrantEl.offsetWidth; // reflow to restart animation
+                    quadrantEl.classList.add('blink-hit');
+                }
+
+                // If writing to Q1, force Q1 to bottom as well
+                if (targetQuadrant === 'q1') {
+                    requestAnimationFrame(scrollQ1ToBottom);
+                }
+            }
+        }
+
+        function addTypedOutput(content, className = '', delay = 5, targetQuadrant = 'q1') {
+            return new Promise((resolve) => {
+                let target;
+                switch(targetQuadrant) {
+                    case 'q1':
+                        target = document.getElementById('command-history');
+                        break;
+                    case 'q2':
+                        target = document.getElementById('author-profile-content');
+                        break;
+                    case 'q3':
+                        target = document.getElementById('works-list');
+                        break;
+                    case 'q4':
+                        target = document.getElementById('work-details');
+                        break;
+                    default:
+                        target = document.getElementById('command-history');
+                }
+                
+                if (!target) {
+                    resolve();
+                    return;
+                }
+                
+                const div = document.createElement('div');
+                div.className = `output ${className}`;
+                target.appendChild(div);
+                
+                // Render instantly if typingInstant is enabled or very short delay requested
+                if (typingInstant || delay <= 1 || (content && content.length > 200)) {
+                    div.innerHTML = content;
+                    div.scrollIntoView({ behavior: 'auto', block: 'end' });
+                    const quadrantEl = target.closest('.quadrant');
+                    if (quadrantEl) {
+                        quadrantEl.classList.remove('blink-hit');
+                        void quadrantEl.offsetWidth;
+                        quadrantEl.classList.add('blink-hit');
+                    }
+                    if (targetQuadrant === 'q1') {
+                        requestAnimationFrame(scrollQ1ToBottom);
+                    }
+                    resolve();
+                    return;
+                }
+                
+                let i = 0;
+                const timer = setInterval(() => {
+                    div.innerHTML = content.substring(0, i) + '<span class="cursor"> </span>';
+                    i++;
+                    if (i > content.length) {
+                        clearInterval(timer);
+                        div.innerHTML = content;
+                        div.scrollIntoView({ behavior: 'auto', block: 'end' });
+                        const quadrantEl = target.closest('.quadrant');
+                        if (quadrantEl) {
+                            quadrantEl.classList.remove('blink-hit');
+                            void quadrantEl.offsetWidth;
+                            quadrantEl.classList.add('blink-hit');
+                        }
+                        if (targetQuadrant === 'q1') {
+                            requestAnimationFrame(scrollQ1ToBottom);
+                        }
+                        resolve();
+                    }
+                }, Math.max(1, delay));
+            });
+        }
+
+        // ========== EVENT HANDLERS ==========
+        document.addEventListener('DOMContentLoaded', function() {
+            const searchInput = document.getElementById('search-input');
+            if (searchInput) {
+                searchInput.focus();
+            }
+        });
+
+        // Handle window resize
+        window.addEventListener('resize', function() {
+            const container = document.querySelector('.container');
+            if (container) {
+                container.style.display = 'none';
+                container.offsetHeight; // Trigger reflow
+                container.style.display = 'grid';
+            }
+        });
+
+        // Prevent horizontal scroll in quadrants
+        document.querySelectorAll('.quadrant').forEach(quadrant => {
+            quadrant.addEventListener('scroll', function() {
+                this.scrollLeft = 0;
+            });
+        });
+
+        // ========== INPUT HANDLING ==========
+        document.addEventListener('DOMContentLoaded', function() {
+            const searchInput = document.getElementById('search-input');
+            if (searchInput) {
+                searchInput.addEventListener('keypress', async (e) => {
+                    if (e.key === 'Enter' && !isSearching) {
+                        const input = searchInput.value.trim();
+                        if (input) {
+                            // Clear input immediately after capturing value
+                            searchInput.value = '';
+                            debugLog('Input cleared immediately', { input });
+                            
+                            // Handle clear command globally
+                            if (input.toLowerCase() === 'clear') {
+                                await handleClearCommand();
+                            } else if (awaitingSelection) {
+                                await handleSelection(input);
+                            } else if (inWorksMode) {
+                                await handleWorksQuery(input);
+                            } else {
+                                await performSearch(input);
+                            }
+                            
+                            // Double-check input is cleared (safety measure)
+                            setTimeout(() => {
+                                if (searchInput.value !== '') {
+                                    debugLog('Input not cleared, forcing clear');
+                                    searchInput.value = '';
+                                }
+                            }, 50);
+
+                            // Ensure Q1 scrolls to bottom after handling command
+                            requestAnimationFrame(scrollQ1ToBottom);
+                        }
+                    }
+                });
+            }
+        });
+
+        // ========== COMMAND FUNCTIONS ==========
+        async function handleClearCommand() {
+            return safeExecute(async () => {
+                debugLog('handleClearCommand called');
+                
+                // Show clear command
+                addOutput(`<span class="prompt-text">${inWorksMode ? 'works' : 'search'}$</span> clear`);
+                
+                // Reset all state variables
+                isSearching = false;
+                currentResults = null;
+                awaitingSelection = false;
+                selectedAuthor = null;
+                inWorksMode = false;
+                
+                // Clear all quadrants
+                const q1 = document.getElementById('command-history');
+                const q2 = document.getElementById('author-profile-content');
+                const q3 = document.getElementById('works-list');
+                const q4 = document.getElementById('work-details');
+                
+                if (q1) q1.innerHTML = '';
+                if (q2) q2.innerHTML = '';
+                if (q3) q3.innerHTML = '';
+                if (q4) q4.innerHTML = '';
+                
+                // Reset UI elements
+                const searchInput = document.getElementById('search-input');
+                const promptText = document.getElementById('prompt-text');
+                const helpText = document.getElementById('help-text');
+                
+                if (searchInput) searchInput.placeholder = "Enter author name to search...";
+                if (promptText) promptText.textContent = "search$";
+                if (helpText) {
+                    helpText.innerHTML = `Available commands:<br>• Enter author name to search<br>• Type 'clear' to reset interface`;
+                }
+                
+                // Show welcome message
+                await addTypedOutput(`[+] Interface cleared. Ready for new author search.`, 'success');
+                await addTypedOutput(`[!] Type an author name to begin searching`, 'info');
+                
+                debugLog('Interface cleared successfully');
+            }, 'handleClearCommand');
+        }
+
+        // ========== API FUNCTIONS ==========
+        async function performSearch(query) {
+            return safeExecute(async () => {
+                if (isSearching) return;
+                isSearching = true;
+
+                // Show search command
+                addOutput(`<span class="prompt-text">search$</span> ${query}`);
+                
+                // Show scanning message
+                await addTypedOutput(`\n[+] Initiating author scan for: "${query}"`, 'info');
+                await addTypedOutput(`[+] Connecting to OpenAlex database...`, 'loading');
+                
+                try {
+                    // Search for authors
+                    const searchUrl = `https://api.openalex.org/authors?search=${encodeURIComponent(query)}&per-page=10`;
+                    const response = await fetch(searchUrl);
+                    const data = await response.json();
+
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+
+                    // Store results for selection
+                    currentResults = data;
+                    
+                    await addTypedOutput(`[+] Scan complete. Found ${data.meta.count} total matches`, 'success', 5, 'q2');
+                    await addTypedOutput(`[+] Displaying top ${Math.min(data.results.length, 5)} targets:\n`, 'info', 5, 'q2');
+
+                    // Display results (limit to top 5 for selection)
+                    let resultOutput = `<div class="section-header">TARGET IDENTIFICATION</div>`;
+                    resultOutput += `<div class="author-details">Total targets found: ${data.meta.count}</div>`;
+                    resultOutput += `<div class="author-details">Showing top: ${Math.min(data.results.length, 5)} candidates</div>\n`;
+
+                    data.results.slice(0, 5).forEach((author, index) => {
+                        const num = index + 1;
+                        resultOutput += `\n<div class="author-entry">`;
+                        resultOutput += `<span class="highlight">[${num}]</span> <span class="author-name">${author.display_name || 'Unknown'}</span>`;
+                        resultOutput += `\n    <div class="author-details">ID: ${author.id || 'N/A'}</div>`;
+                        resultOutput += `    <div class="author-details">Works: ${author.works_count || 0} | Citations: ${author.cited_by_count || 0}</div>`;
+                        
+                        if (author.affiliations && author.affiliations.length > 0) {
+                            const inst = author.affiliations[0].institution;
+                            resultOutput += `    <div class="author-details">Institution: ${inst?.display_name || 'Unknown'}</div>`;
+                        }
+                        
+                        if (author.orcid) {
+                            resultOutput += `    <div class="author-details">ORCID: ${author.orcid}</div>`;
+                        }
+                        resultOutput += `</div>`;
+                    });
+
+                    addOutput(resultOutput, '', 'q2');
+
+                    // Prompt for target selection
+                    await promptForSelection();
+
+                } catch (error) {
+                    await addTypedOutput(`[-] Error: ${error.message}`, 'error');
+                    await addTypedOutput(`[-] Scan operation failed.\n`, 'error');
+                }
+
+                isSearching = false;
+            }, 'performSearch');
+        }
+
+        async function promptForSelection() {
+            await addTypedOutput(`\n[?] Is this the correct target?`, 'info');
+            await addTypedOutput(`    Enter 'y' to select the first result`, 'info');
+            await addTypedOutput(`    Enter a number (1-${Math.min(currentResults.results.length, 5)}) to select that target`, 'info');
+            await addTypedOutput(`    Enter 'n' to cancel and search again`, 'info');
+            
+            awaitingSelection = true;
+            const searchInput = document.getElementById('search-input');
+            const promptText = document.getElementById('prompt-text');
+            if (searchInput) searchInput.placeholder = "Enter selection (y/n/1-5)...";
+            if (promptText) promptText.textContent = "select$";
+        }
+
+        async function handleSelection(input) {
+            return safeExecute(async () => {
+                debugLog('handleSelection called', { input });
+                
+                awaitingSelection = false;
+                
+                // Update prompt
+                const searchInput = document.getElementById('search-input');
+                const promptText = document.getElementById('prompt-text');
+                if (searchInput) searchInput.placeholder = "Enter author name to search...";
+                if (promptText) promptText.textContent = "search$";
+                
+                // Show selection command
+                addOutput(`<span class="prompt-text">select$</span> ${input}`);
+                
+                if (input.toLowerCase() === 'n' || input.toLowerCase() === 'no') {
+                    await addTypedOutput('[+] Target selection cancelled. Ready for new search.', 'info');
+                    return;
+                }
+                
+                // Parse selection (number or 'y'/'yes')
+                let selectedIndex = -1;
+                if (input.toLowerCase() === 'y' || input.toLowerCase() === 'yes') {
+                    selectedIndex = 0; // Select first result
+                } else {
+                    const num = parseInt(input);
+                    if (!isNaN(num) && num >= 1 && num <= Math.min(currentResults.results.length, 5)) {
+                        selectedIndex = num - 1;
+                    }
+                }
+                
+                debugLog('Selection parsed', { selectedIndex, inputLength: currentResults?.results?.length });
+                
+                if (selectedIndex >= 0 && selectedIndex < currentResults.results.length) {
+                    const selectedAuthorFromResults = currentResults.results[selectedIndex];
+                    debugLog('Selected author from results', selectedAuthorFromResults);
+                    
+                    await addTypedOutput(`[+] Target confirmed: ${selectedAuthorFromResults.display_name}`, 'success');
+                    await addTypedOutput(`[+] Initiating detailed reconnaissance...`, 'loading');
+                    
+                    // Get detailed info
+                    try {
+                        const authorId = selectedAuthorFromResults.id.split('/').pop();
+                        debugLog('Fetching author details', { authorId });
+                        
+                        const detailUrl = `https://api.openalex.org/authors/${authorId}`;
+                        const detailResponse = await fetch(detailUrl);
+                        const detailData = await detailResponse.json();
+
+                        debugLog('Detail response received', { 
+                            ok: detailResponse.ok, 
+                            status: detailResponse.status,
+                            dataKeys: Object.keys(detailData)
+                        });
+
+                        if (detailResponse.ok) {
+                            // Use a safer assignment method - create new object instead of modifying existing
+                            selectedAuthor = { ...detailData };
+                            debugLog('Selected author assigned successfully', { 
+                                name: selectedAuthor.display_name,
+                                id: selectedAuthor.id 
+                            });
+                            
+                            await displayDetailedInfo(detailData);
+                            await addTypedOutput(`[+] Target intelligence gathering complete.`, 'success');
+                            await addTypedOutput(`[+] Entering works analysis mode...`, 'info');
+                            await enterWorksMode();
+                        } else {
+                            throw new Error(`HTTP ${detailResponse.status}: ${detailData.message || 'Failed to retrieve detailed information'}`);
+                        }
+                    } catch (error) {
+                        debugLog('Error in detailed info retrieval', error);
+                        await addTypedOutput(`[-] Error retrieving detailed intelligence: ${error.message}`, 'error');
+                        console.error('Full error details:', error);
+                    }
+                } else {
+                    await addTypedOutput(`[-] Invalid selection. Please enter a number 1-${Math.min(currentResults.results.length, 5)}, 'y' for first result, or 'n' to cancel.`, 'error');
+                    await promptForSelection();
+                }
+            }, 'handleSelection');
+        }
+
+        async function displayDetailedInfo(detailData) {
+            const leftWidth = 38;
+            const rightWidth = 38;
+            const safe = (v) => (v === undefined || v === null ? '' : String(v));
+            const pad = (s, n) => {
+                const str = safe(s);
+                const l = [...str].length;
+                return l >= n ? str.slice(0, n) : str + ' '.repeat(n - l);
+            };
+            const truncate = (s, n) => {
+                const str = safe(s);
+                const l = [...str].length;
+                if (l <= n) return pad(str, n);
+                if (n <= 1) return '…';
+                return pad(str.slice(0, n - 1) + '…', n);
+            };
+            const linkCell = (label, url, width) => {
+                const baseLabel = safe(label).trimEnd();
+                const sep = baseLabel.length > 0 ? ' ' : '';
+                const available = Math.max(0, width - (baseLabel.length + sep.length));
+                const displayUrl = safe(url);
+                const truncated = (available > 0) ? (displayUrl.length > available ? displayUrl.slice(0, available - 1) + '…' : displayUrl) : '';
+                const padding = ' '.repeat(Math.max(0, width - (baseLabel.length + sep.length + truncated.length)));
+                const anchor = truncated ? `<a href="${displayUrl}" target="_blank" rel="noopener noreferrer">${truncated}</a>` : '';
+                return `${pad(baseLabel, baseLabel.length)}${sep}${anchor}${padding}`;
+            };
+            const linkifyLeftId = (line, width) => {
+                const m = /^ID:\s*(.+)$/.exec(line);
+                if (!m) return truncate(line, width);
+                const url = m[1];
+                return linkCell('ID:', url, width);
+            };
+            
+            const stats = detailData.summary_stats || {};
+            const twoYr = typeof stats['2yr_mean_citedness'] === 'number'
+                ? stats['2yr_mean_citedness'].toFixed(3)
+                : (stats['2yr_mean_citedness'] || 'N/A');
+
+            const leftLines = [
+                `Name: ${safe(detailData.display_name)}`,
+                `ID: ${safe(detailData.id)}`,
+                `Works: ${safe(detailData.works_count || 0)}      h:${safe(stats.h_index || 'N/A')}  i10:${safe(stats.i10_index || 'N/A')}`,
+                `Citations: ${safe(detailData.cited_by_count || 0)}`,
+                `2yr mean: ${safe(twoYr)}`
+            ];
+
+            const affiliations = Array.isArray(detailData.affiliations) ? detailData.affiliations : [];
+            const orgLines = affiliations.slice(0, 6).map((aff) => {
+                const inst = aff && aff.institution ? aff.institution : {};
+                const cc = inst && inst.country_code ? inst.country_code : '';
+                const name = inst && inst.display_name ? inst.display_name : 'Unknown Institution';
+                return `${cc ? `[${cc}] ` : ''}${name}`;
+            });
+            if (orgLines.length === 0) {
+                orgLines.push('No current affiliations');
+            }
+
+            const links = [];
+            if (detailData.works_api_url) links.push({ label: 'Works API:', url: detailData.works_api_url });
+            if (detailData.orcid) links.push({ label: 'ORCID:', url: detailData.orcid });
+            if (links.length === 0) links.push({ label: '', url: 'No links available' });
+
+            const maxRows = Math.max(leftLines.length, orgLines.length + 1 + links.length);
+            const rows = [];
+
+            const top = `┌${('─ ' + 'Profile' + ' ').padEnd(leftWidth, '─')}┬${('─ ' + 'Orgs' + ' ').padEnd(rightWidth, '─')}┐`;
+            rows.push(top);
+
+            // Determine where to place the right-column Links header
+            const linksHeaderIndex = orgLines.length; // after orgs
+
+            for (let i = 0; i < maxRows; i++) {
+                const rawLeft = i < leftLines.length ? leftLines[i] : '';
+                let leftCell;
+                if (rawLeft.startsWith('ID:')) {
+                    leftCell = linkifyLeftId(rawLeft, leftWidth);
+                } else {
+                    leftCell = truncate(rawLeft, leftWidth);
+                }
+
+                let rightCell = '';
+                if (i < orgLines.length) {
+                    rightCell = truncate(orgLines[i], rightWidth);
+                } else if (i === linksHeaderIndex) {
+                    const rightHeader = ('─ ' + 'Links' + ' ').padEnd(rightWidth, '─');
+                    rows.push(`├${'─'.repeat(leftWidth)}┼${rightHeader}┤`);
+                    continue;
+                } else {
+                    const linkIdx = i - linksHeaderIndex - 1;
+                    if (linkIdx >= 0 && linkIdx < links.length) {
+                        const link = links[linkIdx];
+                        if (link.label && link.url && /^https?:\/\//.test(link.url)) {
+                            rightCell = linkCell(link.label, link.url, rightWidth);
+                        } else {
+                            rightCell = truncate(`${link.label ? link.label + ' ' : ''}${link.url || ''}`, rightWidth);
+                        }
+                    } else {
+                        rightCell = truncate('', rightWidth);
+                    }
+                }
+
+                rows.push(`│${leftCell}│${rightCell}│`);
+            }
+
+            const bottom = `└${'─'.repeat(leftWidth)}┴${'─'.repeat(rightWidth)}┘`;
+            rows.push(bottom);
+
+            const asciiBlock = `<pre class="ascii-block">${rows.join('\n')}</pre>`;
+            addOutput(asciiBlock, '', 'q2');
+        }
+
+        async function enterWorksMode() {
+            inWorksMode = true;
+            await addTypedOutput(`\n[*] WORKS ANALYSIS MODE ACTIVATED`, 'info', 1);
+            await addTypedOutput(`[*] Target: ${selectedAuthor.display_name}`, 'info');
+            await addTypedOutput(`[*] Available commands:`, 'info');
+            await addTypedOutput(`    'recent' - Show recent works`, 'info');
+            await addTypedOutput(`    'top' - Show most cited works`, 'info');
+            await addTypedOutput(`    'search <term>' - Search works by title/abstract`, 'info');
+            await addTypedOutput(`    'year <YYYY>' - Show works from specific year`, 'info');
+            await addTypedOutput(`    'stats' - Show publication statistics`, 'info');
+            await addTypedOutput(`    'topics' - Show research topics`, 'info');
+            await addTypedOutput(`    'exit' - Exit and clear interface`, 'info');
+            await addTypedOutput(`    'clear' - Reset interface completely`, 'info');
+            
+            const searchInput = document.getElementById('search-input');
+            const promptText = document.getElementById('prompt-text');
+            const helpText = document.getElementById('help-text');
+            
+            if (searchInput) searchInput.placeholder = "Enter works command...";
+            if (promptText) promptText.textContent = "works$";
+            if (helpText) {
+                helpText.innerHTML = `Available commands:<br>• recent, top, stats<br>• search &lt;term&gt;<br>• year &lt;YYYY&gt;<br>• exit`;
+            }
+        }
+
+        async function handleWorksQuery(input) {
+            return safeExecute(async () => {
+                debugLog('handleWorksQuery called', { input, selectedAuthor: selectedAuthor?.display_name });
+                
+                isSearching = true;
+                
+                // Show command
+                addOutput(`<span class="prompt-text">works$</span> ${input}`);
+                
+                if (input.toLowerCase() === 'exit') {
+                    // Exit works mode and automatically clear interface
+                    await addTypedOutput(`[+] Exiting works analysis mode...`, 'success');
+                    await handleClearCommand();
+                    isSearching = false;
+                    return;
+                }
+
+                if (!selectedAuthor || !selectedAuthor.id) {
+                    await addTypedOutput(`[-] Error: No author selected. Please search for an author first.`, 'error');
+                    isSearching = false;
+                    return;
+                }
+
+                try {
+                    const authorId = selectedAuthor.id.split('/').pop();
+                    debugLog('Processing works command', { command: input, authorId });
+                    
+                    if (input.toLowerCase() === 'recent') {
+                        await getRecentWorks(authorId);
+                    } else if (input.toLowerCase() === 'top') {
+                        await getTopCitedWorks(authorId);
+                    } else if (input.toLowerCase().startsWith('search ')) {
+                        const searchTerm = input.substring(7).trim();
+                        await searchWorks(authorId, searchTerm);
+                    } else if (input.toLowerCase().startsWith('year ')) {
+                        const year = input.substring(5).trim();
+                        await getWorksByYear(authorId, year);
+                    } else if (input.toLowerCase() === 'stats') {
+                        await getWorkStats(authorId);
+                    } else if (input.toLowerCase() === 'topics') {
+                        await getWorkTopics(authorId);
+                    } else {
+                        await addTypedOutput(`[-] Unknown command: ${input}`, 'error');
+                        await addTypedOutput(`    Available: recent, top, search <term>, year <YYYY>, stats, topics, exit, clear`, 'info');
+                    }
+                } catch (error) {
+                    debugLog('Error in works query', error);
+                    await addTypedOutput(`[-] Error executing command: ${error.message}`, 'error');
+                    console.error('Works query error:', error);
+                }
+                
+                isSearching = false;
+            }, 'handleWorksQuery');
+        }
+
+        async function getRecentWorks(authorId) {
+            return safeExecute(async () => {
+                await addTypedOutput(`[+] Retrieving recent works...`, 'loading');
+                debugLog('getRecentWorks called', { authorId });
+                
+                const url = `https://api.openalex.org/works?filter=author.id:${authorId}&sort=publication_date:desc&per-page=10`;
+                debugLog('Making API request', { url });
+                
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                debugLog('API response received', { 
+                    ok: response.ok, 
+                    status: response.status,
+                    resultCount: data.results?.length || 0 
+                });
+                
+                if (response.ok && data.results && data.results.length > 0) {
+                    await displayWorks(data.results, 'RECENT WORKS');
+                } else if (response.ok) {
+                    await addTypedOutput(`[-] No recent works found for this author`, 'error');
+                } else {
+                    throw new Error(`API Error ${response.status}: ${data.message || 'Failed to retrieve works'}`);
+                }
+            }, 'getRecentWorks');
+        }
+
+        async function getTopCitedWorks(authorId) {
+            return safeExecute(async () => {
+                await addTypedOutput(`[+] Retrieving most cited works...`, 'loading');
+                
+                const url = `https://api.openalex.org/works?filter=author.id:${authorId}&sort=cited_by_count:desc&per-page=10`;
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                if (response.ok && data.results && data.results.length > 0) {
+                    await displayWorks(data.results, 'TOP CITED WORKS');
+                } else if (response.ok) {
+                    await addTypedOutput(`[-] No works found`, 'error');
+                } else {
+                    throw new Error(`API Error ${response.status}: ${data.message || 'Failed to retrieve works'}`);
+                }
+            }, 'getTopCitedWorks');
+        }
+
+        async function searchWorks(authorId, searchTerm) {
+            return safeExecute(async () => {
+                await addTypedOutput(`[+] Searching works for: "${searchTerm}"...`, 'loading');
+                
+                const url = `https://api.openalex.org/works?filter=author.id:${authorId}&search=${encodeURIComponent(searchTerm)}&per-page=10`;
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                if (response.ok && data.results && data.results.length > 0) {
+                    await displayWorks(data.results, `WORKS MATCHING "${searchTerm}"`);
+                } else if (response.ok) {
+                    await addTypedOutput(`[-] No works found matching "${searchTerm}"`, 'error');
+                } else {
+                    throw new Error(`API Error ${response.status}: ${data.message || 'Failed to retrieve works'}`);
+                }
+            }, 'searchWorks');
+        }
+
+        async function getWorksByYear(authorId, year) {
+            return safeExecute(async () => {
+                await addTypedOutput(`[+] Retrieving works from ${year}...`, 'loading');
+                
+                const url = `https://api.openalex.org/works?filter=author.id:${authorId},publication_year:${year}&sort=cited_by_count:desc&per-page=20`;
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                if (response.ok && data.results && data.results.length > 0) {
+                    await displayWorks(data.results, `WORKS FROM ${year}`);
+                } else if (response.ok) {
+                    await addTypedOutput(`[-] No works found from ${year}`, 'error');
+                } else {
+                    throw new Error(`API Error ${response.status}: ${data.message || 'Failed to retrieve works'}`);
+                }
+            }, 'getWorksByYear');
+        }
+
+        async function getWorkStats(authorId) {
+            return safeExecute(async () => {
+                await addTypedOutput(`[+] Analyzing publication statistics...`, 'loading');
+                
+                const url = `https://api.openalex.org/works?filter=author.id:${authorId}&group_by=publication_year&per-page=200`;
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                if (response.ok) {
+                    let statsOutput = `\n<div class="section-header">PUBLICATION STATISTICS</div>`;
+                    statsOutput += `<div class="author-details">Total Works: ${selectedAuthor.works_count}</div>`;
+                    statsOutput += `<div class="author-details">Total Citations: ${selectedAuthor.cited_by_count}</div>`;
+                    statsOutput += `<div class="author-details">H-index: ${selectedAuthor.summary_stats?.h_index || 'N/A'}</div>`;
+                    statsOutput += `<div class="author-details">i10-index: ${selectedAuthor.summary_stats?.i10_index || 'N/A'}</div>\n`;
+                    
+                    if (data.group_by && data.group_by.length > 0) {
+                        statsOutput += `<div class="author-details">Publications by Year:</div>`;
+                        data.group_by.slice(0, 10).forEach(item => {
+                            statsOutput += `    <div class="author-details">${item.key}: ${item.count} works</div>`;
+                        });
+                    }
+                    
+                    addOutput(statsOutput, '', 'q4');
+                    await addTypedOutput(`[+] Statistics analysis complete`, 'success');
+                } else {
+                    await addTypedOutput(`[-] Could not retrieve statistics`, 'error');
+                }
+            }, 'getWorkStats');
+        }
+
+        async function getWorkTopics(authorId) {
+            return safeExecute(async () => {
+                await addTypedOutput(`[+] Analyzing research topics...`, 'loading');
+                
+                const url = `https://api.openalex.org/works?filter=author.id:${authorId}&group_by=topics.id&per-page=200`;
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                if (response.ok && data.group_by && data.group_by.length > 0) {
+                    let topicsOutput = `\n<div class="section-header">RESEARCH TOPICS</div>`;
+                    
+                    // Get topic details for top topics
+                    const topTopics = data.group_by.slice(0, 10);
+                    for (const topic of topTopics) {
+                        try {
+                            const topicUrl = `https://api.openalex.org/topics/${topic.key}`;
+                            const topicResponse = await fetch(topicUrl);
+                            const topicData = await topicResponse.json();
+                            
+                            if (topicResponse.ok) {
+                                topicsOutput += `<div class="author-entry">`;
+                                topicsOutput += `<span class="author-name">${topicData.display_name}</span>`;
+                                topicsOutput += `\n    <div class="author-details">Works: ${topic.count}</div>`;
+                                if (topicData.field) {
+                                    topicsOutput += `    <div class="author-details">Field: ${topicData.field.display_name}</div>`;
+                                }
+                                topicsOutput += `</div>`;
+                            }
+                        } catch (e) {
+                            // Skip if topic details fail
+                        }
+                    }
+                    
+                    addOutput(topicsOutput, '', 'q4');
+                    await addTypedOutput(`[+] Topic analysis complete`, 'success');
+                } else {
+                    await addTypedOutput(`[-] Could not retrieve topic data`, 'error');
+                }
+            }, 'getWorkTopics');
+        }
+
+        async function displayWorks(works, title) {
+            let worksOutput = `\n<div class="section-header">${title}</div>`;
+            worksOutput += `<div class="author-details">Found: ${works.length} works</div>\n`;
+            
+            works.forEach((work, index) => {
+                const num = String(index + 1).padStart(2, '0');
+                worksOutput += `\n<div class="work-item" data-work-index="${index}">`;
+                worksOutput += `<div class="work-title">${work.display_name || work.title || 'Untitled'}</div>`;
+                
+                if (work.publication_year) {
+                    worksOutput += `<div class="work-meta">Year: ${work.publication_year}</div>`;
+                }
+                
+                worksOutput += `<div class="work-meta">Citations: ${work.cited_by_count || 0}</div>`;
+                
+                if (work.primary_location?.source?.display_name) {
+                    worksOutput += `<div class="work-meta">Source: ${work.primary_location.source.display_name}</div>`;
+                }
+
+                if (work.primary_location?.landing_page_url) {
+                    const lp = work.primary_location.landing_page_url;
+                    worksOutput += `<div class="work-meta">Link: ${toClickableUrl(lp, lp)}</div>`;
+                }
+                
+                if (work.open_access?.is_oa) {
+                    const oaUrl = work.open_access.oa_url;
+                    const oaStatus = work.open_access.oa_status || 'unknown';
+                    if (oaUrl) {
+                        worksOutput += `<div class="work-meta">Open Access: Yes (${oaStatus}) - ${toClickableUrl(oaUrl, 'view')}</div>`;
+                    } else {
+                        worksOutput += `<div class="work-meta">Open Access: Yes (${oaStatus})</div>`;
+                    }
+                }
+                
+                if (work.doi) {
+                    const doiUrl = /^https?:/i.test(work.doi) ? work.doi : `https://doi.org/${String(work.doi).replace(/^doi:\s*/i,'')}`;
+                    worksOutput += `<div class="work-meta">DOI: ${toClickableUrl(doiUrl, work.doi)}</div>`;
+                }
+                
+                worksOutput += `</div>`;
+            });
+            
+            addOutput(worksOutput, '', 'q3');
+            
+            // Add click handlers for works
+            setTimeout(() => {
+                document.querySelectorAll('.work-item').forEach((item, index) => {
+                    item.addEventListener('click', function() {
+                        document.querySelectorAll('.work-item').forEach(i => i.classList.remove('selected'));
+                        this.classList.add('selected');
+                        displayWorkDetails(works[index]);
+                    });
+                });
+            }, 100);
+            
+            await addTypedOutput(`[+] Works analysis complete`, 'success', 1);
+        }
+
+        function displayWorkDetails(work) {
+            // Reset Q4 before rendering new details
+            const q4Container = document.getElementById('work-details');
+            if (q4Container) {
+                q4Container.innerHTML = '';
+            }
+            const q4Quadrant = document.querySelector('.q4');
+            if (q4Quadrant) { q4Quadrant.scrollTop = 0; }
+
+            let detailOutput = `\n<div class="section-header">WORK DETAILS</div>`;
+            detailOutput += `<div class="detail-section">`;
+            detailOutput += `<div class="detail-header">Title</div>`;
+            detailOutput += `<div class="detail-content">${work.display_name || work.title || 'Untitled'}</div>`;
+            detailOutput += `</div>`;
+            
+            if (work.publication_year || work.primary_location?.source?.display_name) {
+                detailOutput += `<div class="detail-section">`;
+                detailOutput += `<div class="detail-header">Publication Info</div>`;
+                detailOutput += `<div class="detail-content">`;
+                if (work.publication_year) detailOutput += `Year: ${work.publication_year}<br>`;
+                if (work.type) detailOutput += `Type: ${work.type}<br>`;
+                if (work.primary_location?.source?.display_name) detailOutput += `Source: ${work.primary_location.source.display_name}<br>`;
+                if (work.doi) {
+                    const doiUrl = /^https?:/i.test(work.doi) ? work.doi : `https://doi.org/${String(work.doi).replace(/^doi:\s*/i,'')}`;
+                    detailOutput += `DOI: ${toClickableUrl(doiUrl, work.doi)}`;
+                }
+                detailOutput += `</div></div>`;
+            }
+            
+            detailOutput += `<div class="detail-section">`;
+            detailOutput += `<div class="detail-header">Impact</div>`;
+            detailOutput += `<div class="detail-content">Citations: ${work.cited_by_count || 0}</div>`;
+            detailOutput += `</div>`;
+            
+            if (work.open_access) {
+                detailOutput += `<div class="detail-section">`;
+                detailOutput += `<div class="detail-header">Open Access</div>`;
+                detailOutput += `<div class="detail-content">`;
+                detailOutput += `Status: ${work.open_access.is_oa ? 'Available' : 'Not Available'}<br>`;
+                if (work.open_access.oa_status) detailOutput += `Type: ${work.open_access.oa_status}<br>`;
+                if (work.open_access.oa_url) detailOutput += `URL: ${toClickableUrl(work.open_access.oa_url, work.open_access.oa_url)}`;
+                detailOutput += `</div></div>`;
+            }
+
+            if (work.primary_location?.landing_page_url) {
+                detailOutput += `<div class="detail-section">`;
+                detailOutput += `<div class="detail-header">Links</div>`;
+                detailOutput += `<div class="detail-content">`;
+                detailOutput += `Landing Page: ${toClickableUrl(work.primary_location.landing_page_url, work.primary_location.landing_page_url)}`;
+                detailOutput += `</div></div>`;
+            }
+            
+            addOutput(detailOutput, '', 'q4');
+        }
+
+        // Initial message
+        addTypedOutput('[+] System ready. Enter author name to begin scan.', 'info', 50);
+    </script>
+</body>
+</html>

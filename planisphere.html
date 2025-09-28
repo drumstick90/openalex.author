@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Planisphere — Equirectangular (Blue)</title>
+    <style>
+        :root {
+            --bg: #000;
+            --fg: #4A90E2; /* neon blue */
+            --accent: #FFD700;
+        }
+        * { box-sizing: border-box; }
+        html, body { height: 100%; }
+        body {
+            margin: 0;
+            background: var(--bg);
+            color: var(--fg);
+            font-family: 'Courier New', 'Monaco', 'Menlo', monospace;
+            font-size: 13px;
+            line-height: 1.3;
+            overflow: hidden;
+        }
+        .wrap {
+            position: fixed;
+            inset: 0;
+            display: grid;
+            grid-template-rows: auto 1fr;
+            gap: 8px;
+            padding: 12px;
+        }
+        .title {
+            color: var(--accent);
+            text-align: center;
+            border: 1px solid #2E4F4F;
+            padding: 8px;
+            letter-spacing: 2px;
+        }
+        .panel {
+            border: 1px solid #333;
+            background: #0a0a0a;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+        .panel-header {
+            color: var(--accent);
+            font-weight: bold;
+            padding: 8px;
+            border-bottom: 1px solid #2E4F4F;
+        }
+        .panel-body {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+        }
+        svg { width: 100%; height: 100%; display: block; }
+        .graticule { stroke: var(--fg); stroke-opacity: 0.7; fill: none; stroke-width: 0.6; }
+        .land { stroke: var(--fg); fill: none; stroke-width: 0.6; }
+        .frame { stroke: var(--fg); fill: none; stroke-width: 1; }
+        .hint { position: absolute; bottom: 8px; left: 8px; font-size: 11px; color: #666; }
+        .debug { position: absolute; bottom: 8px; right: 8px; font-size: 11px; color: #666; text-align: right; }
+
+        @keyframes blink { 0%{box-shadow:0 0 0 0 rgba(255,215,0,0);} 50%{box-shadow:0 0 10px 2px rgba(255,215,0,0.9);} 100%{box-shadow:0 0 0 0 rgba(255,215,0,0);} }
+        .blink { animation: blink 300ms ease-in-out 2; }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="title">PLANISPHERE — Equirectangular Projection (Blue Lines)</div>
+        <div class="panel blink" id="panel">
+            <div class="panel-header">[ WORLD ]</div>
+            <div class="panel-body">
+                <svg viewBox="0 0 960 480" preserveAspectRatio="xMidYMid meet" id="svg"></svg>
+                <div class="hint">Ready for data-driven coloring (country_code → intensity)</div>
+                <div class="debug" id="debug"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const svg = document.getElementById('svg');
+        const NS = 'http://www.w3.org/2000/svg';
+        const W = 960, H = 480; // 2:1 equirectangular
+        const panel = document.getElementById('panel');
+
+        // ========== PARAMS ==========
+        function getAuthorParam() {
+            const p = new URLSearchParams(window.location.search);
+            let v = p.get('author') || '';
+            if (!v) return '';
+            // Accept full URL or short ID
+            if (/openalex\.org\//.test(v)) {
+                const parts = v.split('/');
+                v = parts[parts.length - 1];
+            }
+            return v.trim();
+        }
+
+        function lonlatToXY(lon, lat) {
+            const x = (lon + 180) / 360 * W;
+            const y = (90 - lat) / 180 * H;
+            return [x, y];
+        }
+
+        function addGraticule() {
+            // Latitudes
+            for (let lat = -60; lat <= 60; lat += 30) {
+                const path = document.createElementNS(NS, 'path');
+                let d = '';
+                for (let lon = -180; lon <= 180; lon += 2) {
+                    const [x, y] = lonlatToXY(lon, lat);
+                    d += (lon === -180 ? 'M' : 'L') + x.toFixed(2) + ' ' + y.toFixed(2) + ' ';
+                }
+                path.setAttribute('d', d);
+                path.setAttribute('class', 'graticule');
+                svg.appendChild(path);
+            }
+            // Longitudes
+            for (let lon = -150; lon <= 150; lon += 30) {
+                const path = document.createElementNS(NS, 'path');
+                let d = '';
+                for (let lat = -90; lat <= 90; lat += 2) {
+                    const [x, y] = lonlatToXY(lon, lat);
+                    d += (lat === -90 ? 'M' : 'L') + x.toFixed(2) + ' ' + y.toFixed(2) + ' ';
+                }
+                path.setAttribute('d', d);
+                path.setAttribute('class', 'graticule');
+                svg.appendChild(path);
+            }
+        }
+
+        function pathFromPolygon(coords) {
+            let d = '';
+            for (let i = 0; i < coords.length; i++) {
+                const c = coords[i];
+                const [x, y] = lonlatToXY(c[0], c[1]);
+                d += (i === 0 ? 'M' : 'L') + x.toFixed(2) + ' ' + y.toFixed(2) + ' ';
+            }
+            return d + 'Z';
+        }
+
+        function drawFeature(feature) {
+            const g = document.createElementNS(NS, 'g');
+            svg.appendChild(g);
+            const geom = feature.geometry;
+            if (!geom) return;
+            if (geom.type === 'Polygon') {
+                const p = document.createElementNS(NS, 'path');
+                const rings = geom.coordinates || [];
+                let d = '';
+                for (const ring of rings) d += pathFromPolygon(ring);
+                p.setAttribute('d', d);
+                p.setAttribute('class', 'land');
+                g.appendChild(p);
+            } else if (geom.type === 'MultiPolygon') {
+                const p = document.createElementNS(NS, 'path');
+                let d = '';
+                for (const poly of geom.coordinates || []) {
+                    for (const ring of poly) d += pathFromPolygon(ring);
+                }
+                p.setAttribute('d', d);
+                p.setAttribute('class', 'land');
+                g.appendChild(p);
+            }
+        }
+
+        function drawFrame() {
+            const rect = document.createElementNS(NS, 'rect');
+            rect.setAttribute('x', 0.5);
+            rect.setAttribute('y', 0.5);
+            rect.setAttribute('width', W - 1);
+            rect.setAttribute('height', H - 1);
+            rect.setAttribute('class', 'frame');
+            svg.appendChild(rect);
+        }
+
+        // ========== COUNTRY OUTLINES + CENTROIDS ==========
+        const iso2ToCentroid = new Map();
+        const countryPaths = new Map(); // iso2 -> path element
+
+        // Fallback geographic centroids (lat, lon) for mock/test and robustness
+        const fallbackLatLon = new Map(Object.entries({
+            'GB': { lat: 54.0, lon: -2.0 },
+            'US': { lat: 39.8, lon: -98.6 },
+            'IT': { lat: 42.5, lon: 12.5 },
+            'AM': { lat: 40.3, lon: 44.9 },
+            'DE': { lat: 51.2, lon: 10.4 },
+            'AU': { lat: -25.3, lon: 133.8 },
+            'PL': { lat: 52.1, lon: 19.1 },
+            'BE': { lat: 50.8, lon: 4.4 },
+            'CA': { lat: 61.1, lon: -113.7 },
+            'CN': { lat: 35.9, lon: 104.2 },
+            'PK': { lat: 30.4, lon: 69.4 },
+            'RU': { lat: 61.5, lon: 105.3 },
+            'SK': { lat: 48.7, lon: 19.5 },
+            'SS': { lat: 7.3, lon: 30.3 },
+            'ZA': { lat: -30.6, lon: 22.9 },
+        }));
+
+        function centroidForISO2(iso) {
+            if (iso2ToCentroid.has(iso)) return iso2ToCentroid.get(iso);
+            if (fallbackLatLon.has(iso)) {
+                const { lat, lon } = fallbackLatLon.get(iso);
+                const [x, y] = lonlatToXY(lon, lat);
+                return { x, y };
+            }
+            return null;
+        }
+
+        function featureISO2(props) {
+            if (!props) return '';
+            const keys = ['ISO_A2', 'iso_a2', 'ISO_A2_EH', 'iso2', 'cca2', 'code', 'id', 'ADM0_A3_IS', 'ADM0_A3_US'];
+            for (const k of keys) {
+                if (!props[k]) continue;
+                const val = String(props[k]).toUpperCase();
+                if (val.length === 2 && /^[A-Z]{2}$/.test(val)) return val;
+            }
+            return '';
+        }
+
+        function computePathCentroid(d) {
+            const nums = d.match(/[-\d\.]+/g);
+            if (!nums || nums.length < 2) return null;
+            let sumX = 0, sumY = 0, count = 0;
+            for (let i = 0; i < nums.length - 1; i += 2) {
+                const x = parseFloat(nums[i]);
+                const y = parseFloat(nums[i + 1]);
+                if (!isNaN(x) && !isNaN(y)) {
+                    sumX += x;
+                    sumY += y;
+                    count++;
+                }
+            }
+            if (count === 0) return null;
+            return { x: sumX / count, y: sumY / count };
+        }
+
+        async function loadCountries() {
+            svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+            addGraticule();
+            drawFrame();
+
+            async function tryLoad(url) {
+                try {
+                    const res = await fetch(url);
+                    if (!res.ok) return false;
+                    const gj = await res.json();
+                    if (!gj || !gj.features) return false;
+                    for (const f of gj.features) {
+                        const geom = f.geometry;
+                        const iso2 = featureISO2(f.properties);
+                        const g = document.createElementNS(NS, 'g');
+                        svg.appendChild(g);
+                        if (!geom) continue;
+                        const p = document.createElementNS(NS, 'path');
+                        let d = '';
+                        if (geom.type === 'Polygon') {
+                            for (const ring of (geom.coordinates || [])) d += pathFromPolygon(ring);
+                        } else if (geom.type === 'MultiPolygon') {
+                            for (const poly of (geom.coordinates || [])) {
+                                for (const ring of poly) d += pathFromPolygon(ring);
+                            }
+                        }
+                        if (!d) continue;
+                        p.setAttribute('d', d);
+                        p.setAttribute('class', 'land');
+                        g.appendChild(p);
+                        if (iso2) {
+                            countryPaths.set(iso2, p);
+                            const c = computePathCentroid(d);
+                            if (c) iso2ToCentroid.set(iso2, c);
+                        }
+                    }
+                    return true;
+                } catch {
+                    return false;
+                }
+            }
+
+            // Prefer Natural Earth (has ISO_A2); fallback to Johan's compact dataset
+            let ok = await tryLoad('https://raw.githubusercontent.com/martynafford/natural-earth-geojson/master/50m/cultural/ne_50m_admin_0_countries.geojson');
+            if (!ok) {
+                ok = await tryLoad('https://raw.githubusercontent.com/johan/world.geo.json/master/countries.geo.json');
+            }
+            // If we loaded but did not populate ISO centroids (e.g., dataset lacks iso2), attempt the other source
+            if (iso2ToCentroid.size < 10) {
+                await tryLoad('https://raw.githubusercontent.com/johan/world.geo.json/master/countries.geo.json');
+            }
+        }
+
+        // ========== DRAW ARCS ==========
+        function drawArc(x1, y1, x2, y2, weight) {
+            const midX = (x1 + x2) / 2;
+            const midY = (y1 + y2) / 2;
+            const dx = x2 - x1;
+            const dy = y2 - y1;
+            const dist = Math.hypot(dx, dy);
+            const normX = -dy / (dist || 1);
+            const normY = dx / (dist || 1);
+            const curvature = Math.min(120, dist * 0.25);
+            const cx = midX + normX * curvature;
+            const cy = midY + normY * curvature;
+            const path = document.createElementNS(NS, 'path');
+            path.setAttribute('d', `M ${x1.toFixed(1)} ${y1.toFixed(1)} Q ${cx.toFixed(1)} ${cy.toFixed(1)} ${x2.toFixed(1)} ${y2.toFixed(1)}`);
+            path.setAttribute('fill', 'none');
+            path.setAttribute('stroke', getComputedStyle(document.documentElement).getPropertyValue('--fg').trim() || '#4A90E2');
+            const width = Math.max(0.7, Math.min(6, 0.7 + Math.log2(1 + weight)));
+            path.setAttribute('stroke-width', width.toFixed(2));
+            path.setAttribute('stroke-opacity', '0.85');
+            path.setAttribute('vector-effect', 'non-scaling-stroke');
+            svg.appendChild(path);
+            return path;
+        }
+
+        function blinkPanel() {
+            panel.classList.remove('blink');
+            void panel.offsetWidth;
+            panel.classList.add('blink');
+        }
+
+        // ========== OPENALEX WORKS FETCH ==========
+        async function fetchAllWorksForAuthor(authorId) {
+            const results = [];
+            let cursor = '*';
+            const perPage = 200;
+            let pageCount = 0;
+            const maxPages = 20; // safety cap
+            while (cursor && pageCount < maxPages) {
+                const url = `https://api.openalex.org/works?filter=author.id:${authorId}&per-page=${perPage}&cursor=${encodeURIComponent(cursor)}`;
+                const res = await fetch(url);
+                if (!res.ok) break;
+                const data = await res.json();
+                if (data && Array.isArray(data.results)) {
+                    results.push(...data.results);
+                }
+                cursor = data && data.meta ? data.meta.next_cursor : null;
+                pageCount++;
+            }
+            return results;
+        }
+
+        async function fetchAuthorDetail(authorId) {
+            try {
+                const url = `https://api.openalex.org/authors/${authorId}`;
+                const res = await fetch(url);
+                if (!res.ok) return null;
+                return await res.json();
+            } catch { return null; }
+        }
+
+        // ========== MVP AGGREGATION ==========
+        function buildMvpCountryNetwork(authorId, works) {
+            const anchorCountries = new Map();
+            const coCountries = new Map();
+
+            for (const w of works) {
+                const auths = Array.isArray(w.authorships) ? w.authorships : [];
+                const anchorAuth = auths.find(a => a.author && (String(a.author.id || '').endsWith('/' + authorId)));
+                if (!anchorAuth) continue;
+
+                const anchorIsoSet = new Set();
+                const coIsoSet = new Set();
+
+                const aInsts = Array.isArray(anchorAuth.institutions) ? anchorAuth.institutions : [];
+                for (const inst of aInsts) {
+                    const cc = (inst && inst.country_code) ? String(inst.country_code).toUpperCase() : '';
+                    if (cc) anchorIsoSet.add(cc);
+                }
+
+                for (const a of auths) {
+                    if (!a.author || String(a.author.id || '').endsWith('/' + authorId)) continue;
+                    const insts = Array.isArray(a.institutions) ? a.institutions : [];
+                    for (const inst of insts) {
+                        const cc = (inst && inst.country_code) ? String(inst.country_code).toUpperCase() : '';
+                        if (cc) coIsoSet.add(cc);
+                    }
+                }
+
+                if (anchorIsoSet.size === 0) continue;
+                for (const cc of anchorIsoSet) anchorCountries.set(cc, (anchorCountries.get(cc) || 0) + 1);
+                for (const cc of coIsoSet) coCountries.set(cc, (coCountries.get(cc) || 0) + 1);
+            }
+
+            let anchorISO = '';
+            let maxCount = -1;
+            for (const [cc, cnt] of anchorCountries.entries()) {
+                if (cnt > maxCount) { maxCount = cnt; anchorISO = cc; }
+            }
+
+            return { anchorISO, coCountries };
+        }
+
+        function drawMvpNetwork(anchorISO, coCountries) {
+            const dbg = document.getElementById('debug');
+            const a = centroidForISO2(anchorISO || '');
+            if (!a) {
+                if (dbg) dbg.textContent = `centroids: ${iso2ToCentroid.size} | anchor ${anchorISO || 'N/A'} not found`;
+                return;
+            }
+            const [ax, ay] = [a.x, a.y];
+            // draw anchor point
+            const anchorDot = document.createElementNS(NS, 'circle');
+            anchorDot.setAttribute('cx', ax.toFixed(1));
+            anchorDot.setAttribute('cy', ay.toFixed(1));
+            anchorDot.setAttribute('r', 3);
+            anchorDot.setAttribute('fill', getComputedStyle(document.documentElement).getPropertyValue('--fg').trim() || '#4A90E2');
+            svg.appendChild(anchorDot);
+            let drawn = 0;
+            for (const [cc, weight] of coCountries.entries()) {
+                const b = centroidForISO2(cc);
+                if (!b) continue;
+                // draw target dot
+                const dot = document.createElementNS(NS, 'circle');
+                dot.setAttribute('cx', b.x.toFixed(1));
+                dot.setAttribute('cy', b.y.toFixed(1));
+                dot.setAttribute('r', Math.min(3, 1.5 + Math.log2(1 + weight)));
+                dot.setAttribute('fill', getComputedStyle(document.documentElement).getPropertyValue('--fg').trim() || '#4A90E2');
+                svg.appendChild(dot);
+                drawArc(ax, ay, b.x, b.y, weight);
+                drawn++;
+            }
+            if (dbg) dbg.textContent = `centroids: ${iso2ToCentroid.size} | anchor: ${anchorISO} | arcs: ${drawn}`;
+            blinkPanel();
+        }
+
+        // ========== MOCK NETWORK (hardcoded) ==========
+        function drawMockNetwork() {
+            // Anchor: GB; Coauthor countries and counts inspired by sample output
+            const mockMap = new Map([
+                ['US', 57],
+                ['GB', 23],
+                ['IT', 15],
+                ['AM', 14],
+                ['DE', 9],
+                ['AU', 4],
+                ['PL', 2],
+                ['BE', 1],
+                ['CA', 1],
+                ['CN', 1],
+                ['PK', 1],
+                ['RU', 1],
+                ['SK', 1],
+                ['SS', 1],
+                ['ZA', 1],
+            ]);
+            drawMvpNetwork('GB', mockMap);
+        }
+
+        async function init() {
+            await loadCountries();
+            const params = new URLSearchParams(window.location.search);
+            const mock = params.get('mock') === '1';
+            const authorId = getAuthorParam();
+
+            if (mock) {
+                setTimeout(drawMockNetwork, 200);
+                return;
+            }
+
+            if (!authorId) {
+                const hint = document.querySelector('.hint');
+                if (hint) hint.textContent = "Add ?author=A######## to the URL (e.g., A41008148) or use ?mock=1";
+                return;
+            }
+
+            try {
+                const works = await fetchAllWorksForAuthor(authorId);
+                const { anchorISO, coCountries } = buildMvpCountryNetwork(authorId, works);
+                let aISO = anchorISO;
+                if (!aISO) {
+                    const detail = await fetchAuthorDetail(authorId);
+                    const counts = new Map();
+                    if (detail && Array.isArray(detail.affiliations)) {
+                        for (const aff of detail.affiliations) {
+                            const inst = aff && aff.institution ? aff.institution : null;
+                            const cc = inst && inst.country_code ? String(inst.country_code).toUpperCase() : '';
+                            if (cc) counts.set(cc, (counts.get(cc) || 0) + 1);
+                        }
+                    }
+                    let best = '';
+                    let mx = -1;
+                    for (const [cc, n] of counts.entries()) { if (n > mx) { mx = n; best = cc; } }
+                    aISO = best || aISO;
+                }
+                const dbg = document.getElementById('debug');
+                if (dbg) dbg.textContent = `works: ${works.length} | coCountries: ${coCountries.size} | anchor: ${aISO || 'N/A'}`;
+                setTimeout(() => drawMvpNetwork(aISO, coCountries), 200);
+            } catch (e) {
+                const dbg = document.getElementById('debug');
+                if (dbg) dbg.textContent = 'Live fetch failed; check network or try later.';
+            }
+        }
+
+        init();
+    </script>
+</body>
+</html>
